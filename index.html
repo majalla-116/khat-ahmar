@@ -1095,16 +1095,26 @@ function unlockAudio() {
     if (p && p.then) p.then(() => { if (!wantPlay) { introAudio.pause(); introAudio.currentTime = 0; } introAudio.muted = muted; }).catch(() => { introAudio.muted = muted; });
   } catch (e) { /* audio not supported */ }
 }
+/* على الجوال المتصفح ما يسمح بتشغيل الصوت إلا لما ترفع الطالبة إصبعها،
+   فإذا انمنع التشغيل لحظة اكتمال الإطار نشغّله أول ما ترفع إصبعها */
+let pendingPlay = false;
+function startIntroAudio() {
+  introAudio.muted = false;
+  pendingPlay = true;
+  const p = introAudio.play();
+  if (p && p.then) p.then(() => { pendingPlay = false; }).catch(() => { pendingPlay = true; });
+}
 function playIntroAudio() {
   if (!introAudio || muted) return;
   wantPlay = true;
-  try {
-    introAudio.muted = false;
-    introAudio.currentTime = 0;
-    const p = introAudio.play();
-    if (p && p.catch) p.catch(() => {});
-  } catch (e) { /* ignore */ }
+  try { introAudio.currentTime = 0; startIntroAudio(); } catch (e) { pendingPlay = true; }
 }
+function playOnRelease() {
+  if (!pendingPlay || muted || !introAudio) return;
+  if (!introAudio.paused) { pendingPlay = false; return; }
+  try { introAudio.currentTime = 0; startIntroAudio(); } catch (e) { /* ignore */ }
+}
+['pointerup', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, playOnRelease, true));
 $('#sndBtn').addEventListener('click', () => {
   muted = !muted;
   if (introAudio) introAudio.muted = muted;
