@@ -430,6 +430,12 @@ button:focus-visible,.inp:focus-visible,.pick:focus-within{outline:3px solid var
 
 @media (max-width:360px){.hero-title{font-size:40px}.big-title{font-size:38px}.m-title{font-size:28px}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
+.tap-gate{position:absolute;inset:0;z-index:6;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:rgba(6,18,13,.62);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);color:var(--text);font:inherit;border:0;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:opacity .35s}
+.tap-gate.out{opacity:0;pointer-events:none}
+.gate-btn{display:inline-flex;align-items:center;gap:12px;padding:14px 36px;border-radius:99px;background:var(--red);color:#fff;font-family:var(--f-display);font-size:26px;box-shadow:0 0 0 6px var(--red-soft),var(--shadow)}
+.gate-ico{font-size:17px}
+.gate-note{font-size:14px;color:var(--sand)}
+.tap-gate:focus-visible .gate-btn{outline:3px solid var(--sand);outline-offset:4px}
 </style>
 </head>
 <body>
@@ -460,6 +466,7 @@ button:focus-visible,.inp:focus-visible,.pick:focus-within{outline:3px solid var
     </div>
   </div>
   <div class="credits" id="introCredits"></div>
+  <button class="tap-gate" id="tapGate" type="button" aria-label="ابدئي"><span class="gate-btn"><span class="gate-ico" aria-hidden="true">▶</span>ابدئي</span><span class="gate-note">🔊 ارفعي صوت الجوال قبل ما تبدئين</span></button>
 </section>
 
 <!-- ===================== HOME ===================== -->
@@ -1095,42 +1102,85 @@ function unlockAudio() {
     if (p && p.then) p.then(() => { if (!wantPlay) { introAudio.pause(); introAudio.currentTime = 0; } introAudio.muted = muted; }).catch(() => { introAudio.muted = muted; });
   } catch (e) { /* audio not supported */ }
 }
-/* الجوالات ما تسمح بتشغيل الصوت إلا مع لمسة تنتهي برفع الإصبع:
-   - إذا انمنع الصوت لحظة اكتمال الإطار، يشتغل أول ما ترفع الطالبة إصبعها
-   - وأي لمسة قبل الختم تجهّز الصوت عشان يشتغل في وقته */
+/* ---------- تشغيل صوت الختم على الجوالات ----------
+   الآيفون ما يسمح بالصوت إلا بعد لمسة قصيرة (الضغط المطوّل ما يُحسب)،
+   فالصفحة تبدأ بزر «ابدئي» يجهّز الصوت، وبعدها يشتغل لحظة اكتمال الإطار.
+   ولو انمنع رغم ذلك نشغّله بطريقة Web Audio، وآخر حل: أول لمسة بعد الختم. */
 let pendingPlay = false, pendingUntil = 0, primed = false;
-function startIntroAudio() {
-  introAudio.muted = false;
-  pendingPlay = true;
-  const p = introAudio.play();
-  if (p && p.then) p.then(() => { pendingPlay = false; }).catch(() => { pendingPlay = true; });
+let actx = null, abuf = null, asrc = null;
+function introSources() { return [...introAudio.querySelectorAll('source')].map(x => x.src).concat(introAudio.src ? [introAudio.src] : []); }
+function loadBuffer(list) {
+  if (!list.length || abuf) return;
+  fetch(list[0]).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
+    .then(d => new Promise((res, rej) => actx.decodeAudioData(d, res, rej)))
+    .then(b => { abuf = b; }).catch(() => loadBuffer(list.slice(1)));
 }
-function playIntroAudio() {
-  if (!introAudio || muted) return;
-  wantPlay = true;
-  pendingUntil = Date.now() + 6000;
-  try { introAudio.currentTime = 0; startIntroAudio(); } catch (e) { pendingPlay = true; }
+function initWebAudio() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) { actx = new AC(); loadBuffer(introSources()); }
+    if (actx.state !== 'running' && actx.resume) actx.resume();
+    const b = actx.createBuffer(1, 1, 22050), s = actx.createBufferSource();
+    s.buffer = b; s.connect(actx.destination); s.start(0);
+  } catch (e) { /* no Web Audio */ }
 }
-function onUserRelease() {
-  if (!introAudio) return;
-  if (pendingPlay && !muted && Date.now() < pendingUntil) {
-    if (!introAudio.paused) { pendingPlay = false; return; }
-    try { introAudio.currentTime = 0; startIntroAudio(); } catch (e) { /* ignore */ }
-    return;
-  }
-  if (!primed && !wantPlay) {
-    primed = true;
+function playViaWebAudio() {
+  if (!actx || !abuf || muted) return false;
+  try {
+    if (actx.state !== 'running' && actx.resume) actx.resume();
+    asrc = actx.createBufferSource(); asrc.buffer = abuf; asrc.connect(actx.destination); asrc.start(0);
+    return true;
+  } catch (e) { return false; }
+}
+function unlockForSound() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older iOS */ }
+  primed = true;
+  if (introAudio && !wantPlay) {
     try {
       introAudio.muted = true;
       const p = introAudio.play();
       if (p && p.then) p.then(() => { if (!wantPlay) { introAudio.pause(); introAudio.currentTime = 0; } introAudio.muted = muted; }).catch(() => { introAudio.muted = muted; });
     } catch (e) { /* ignore */ }
   }
+  initWebAudio();
+}
+function startIntroAudio(useBackup) {
+  introAudio.muted = false;
+  pendingPlay = true;
+  let p;
+  try { p = introAudio.play(); } catch (e) { p = Promise.reject(e); }
+  Promise.resolve(p).then(() => { pendingPlay = false; })
+    .catch(() => { pendingPlay = !(useBackup && playViaWebAudio()); });
+}
+function playIntroAudio() {
+  if (!introAudio || muted) return;
+  wantPlay = true;
+  pendingUntil = Date.now() + 6000;
+  try { introAudio.currentTime = 0; } catch (e) { /* ignore */ }
+  startIntroAudio(true);
+}
+function onUserRelease() {
+  if (!introAudio) return;
+  if (pendingPlay && !muted && Date.now() < pendingUntil) {
+    if (!introAudio.paused) { pendingPlay = false; return; }
+    try { introAudio.currentTime = 0; } catch (e) { /* ignore */ }
+    startIntroAudio(false);
+    return;
+  }
+  if (!primed && !wantPlay) unlockForSound();
 }
 ['pointerup', 'touchend', 'click', 'keyup'].forEach(ev => window.addEventListener(ev, onUserRelease, true));
+const tapGate = $('#tapGate');
+if (tapGate) tapGate.addEventListener('click', () => {
+  unlockForSound();
+  tapGate.classList.add('out');
+  setTimeout(() => { tapGate.hidden = true; }, 360);
+});
 $('#sndBtn').addEventListener('click', () => {
   muted = !muted;
   if (introAudio) introAudio.muted = muted;
+  if (muted && asrc) { try { asrc.stop(); } catch (e) { /* ignore */ } }
   $('#sndBtn').textContent = muted ? '🔇' : '🔊';
   $('#sndBtn').setAttribute('aria-label', muted ? 'تشغيل الصوت' : 'كتم الصوت');
 });
